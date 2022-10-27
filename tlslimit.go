@@ -1,3 +1,4 @@
+// Package tlslimit provides a rate limiter to fewer expensive TLS handshakes.
 package tlslimit
 
 import (
@@ -29,9 +30,11 @@ func (fn optionFunc) apply(r *Limiter) {
 
 // WithGetCertificate returns a tls.Certificate based on the given
 // tls.ClientHelloInfo. It will only be called if the Limiter.GetCertificate
-// sat in tls.Config and client TLS handshakes rate limit does not exceeded.
+// sat in tls.Config and client TLS handshakes rate limits does not exceeded.
 //
 // If fn is nil or returns nil, then the TLS handshakes will be aborted.
+//
+// See the documentation of [tls.Config]: https://pkg.go.dev/crypto/tls#Config for more information.
 func WithGetCertificate(fn func(*tls.ClientHelloInfo) (*tls.Certificate, error)) Option {
 	return optionFunc(func(l *Limiter) {
 		l.getCertificate = fn
@@ -42,7 +45,9 @@ func WithGetCertificate(fn func(*tls.ClientHelloInfo) (*tls.Certificate, error))
 // tls.ClientHelloInfo. It will only be called if the Limiter.GetConfigForClient
 // sat in tls.Config and client tls handshakes rate limit does not exceeded.
 //
-// If fn is nil or returns nil, then the original tls.Config will be used
+// If fn is nil or returns nil, then the original tls.Config will be used.
+//
+// See the documentation of [tls.Config]: https://pkg.go.dev/crypto/tls#Config for more information.
 func WithGetConfigForClient(fn func(*tls.ClientHelloInfo) (*tls.Config, error)) Option {
 	return optionFunc(func(l *Limiter) {
 		l.getConfigForClient = fn
@@ -115,8 +120,6 @@ func NewLimiter(opts ...Option) *Limiter {
 // Limiter controls how frequently TLS handshakes are allowed to happen.
 // It implements a "token bucket" of size b, initially full and refilled
 // at rate r tokens per duration.
-// Informally, in any large enough time interval, the Limiter limits the
-// rate to r tokens per duration, with a maximum burst size of b TLS handshakes.
 // See https://en.wikipedia.org/wiki/Token_bucket for more about token buckets.
 //
 // The zero value is a valid Limiter, but it will reject all TLS handshakes.
@@ -127,7 +130,11 @@ func NewLimiter(opts ...Option) *Limiter {
 //
 // Each of the two methods consumes a single token.
 // If no token is available, It returns error to abort TLS handshake.
-// If TLS session resumption is used the rate limiting will not be applied.
+// If client reuse TLS connections (HTTP2), the two methods will not be invoked
+// by "crypto/tls" package then the rate limiting will not be applied.
+// This translates to fewer expensive TLS handshakes, mitigates SSL/TLS exhaustion DDoS attacks,
+// and an overall reduction in required server resources without affecting the overall number of
+// concurrent requests that the server can handle.
 //
 // Limiter by default applies global rate limiting.
 // Use WithTLSHostname or WithTLSClientIP to apply rate limiting per ip or domain.
@@ -157,10 +164,11 @@ func (lim *Limiter) GetConfigForClient(ci *tls.ClientHelloInfo) (*tls.Config, er
 }
 
 func (lim *Limiter) limit(ci *tls.ClientHelloInfo) error {
-	var key = "global"
+	err := errors.New("tlslimit: too many TLS handshakes")
+	key := "global"
 
 	if lim.cache == nil {
-		return nil
+		return err
 	}
 
 	if lim.keyFn != nil {
@@ -174,7 +182,7 @@ func (lim *Limiter) limit(ci *tls.ClientHelloInfo) error {
 	}
 
 	if lim.r <= 0 || !v.(*rate.Limiter).Allow() {
-		return errors.New("tlslimit: too many TLS handshakes")
+		return err
 	}
 
 	return nil

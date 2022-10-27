@@ -3,6 +3,7 @@ package tlslimit
 import (
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -10,6 +11,14 @@ import (
 	"github.com/shaj13/libcache"
 	"github.com/stretchr/testify/require"
 )
+
+func TestZeroLimiter(t *testing.T) {
+	lim := new(Limiter)
+	for i := 0; i < 100; i++ {
+		err := lim.limit(new(tls.ClientHelloInfo))
+		require.Error(t, err)
+	}
+}
 
 func TestOption(t *testing.T) {
 	table := []struct {
@@ -108,10 +117,12 @@ func TestLimiterGet(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		lim := &Limiter{
-			getCertificate:     tt.getCertificate,
-			getConfigForClient: tt.getConfigForClient,
-		}
+		lim := NewLimiter(
+			WithLimit(1),
+			WithBursts(1),
+			WithGetCertificate(tt.getCertificate),
+			WithGetConfigForClient(tt.getConfigForClient),
+		)
 
 		var err error
 
@@ -133,7 +144,8 @@ func TestLimiterLimit(t *testing.T) {
 		expectErr bool
 	}{
 		{
-			lim: new(Limiter),
+			lim:       new(Limiter),
+			expectErr: true,
 		},
 		{
 			lim: &Limiter{
@@ -243,6 +255,17 @@ func TestEverything(t *testing.T) {
 			_, err := c.Get(url)
 			require.NoError(t, err, i)
 		}
+	}
+
+	// Wait for server to be up and live.
+	for i := 0; i < 10; i++ {
+		conn, err := net.DialTimeout("tcp", srv.Addr, time.Second)
+		if err == nil {
+			conn.Close()
+			break
+		}
+
+		time.Sleep(time.Millisecond * 500)
 	}
 
 	// Round #1 TLS handshakes limit exceeded.
